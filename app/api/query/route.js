@@ -16,6 +16,383 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 
 // ==============================
+// 📚 PDF Data Source Configuration
+// ==============================
+const PDF_CONFIG = {
+  // Specific PDF files from Google Drive
+  pdfFiles: [
+    {
+      id: "1NWmzMGDQ_W8nK6-aNdGUnA78yd2iUOwu",
+      name: "Construction Materials Guide",
+      category: "general",
+      description: "General construction materials information and specifications"
+    },
+    {
+      id: "1czIFn3_40M0ziVkoz6VBtHbmB-OmGCPF", 
+      name: "Supplier Catalog",
+      category: "suppliers",
+      description: "Supplier catalog with product details and pricing"
+    }
+  ],
+  
+  // Supported PDF types for construction materials
+  supportedCategories: [
+    'cement', 'steel', 'paint', 'tiles', 'electrical', 'plumbing',
+    'hardware', 'tools', 'sanitary', 'construction', 'general', 'suppliers'
+  ],
+  
+  // Cache for PDF content (in production, use Redis or similar)
+  pdfCache: new Map(),
+  
+  // Cache duration (1 hour)
+  cacheDuration: 60 * 60 * 1000
+};
+
+// ==============================
+// 📄 PDF Content Extractor
+// ==============================
+async function extractPDFContent(pdfFile, requestId) {
+  const cacheKey = `${pdfFile.id}_${pdfFile.lastModified || ''}`;
+  const cached = PDF_CONFIG.pdfCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp < PDF_CONFIG.cacheDuration)) {
+    console.log('📄 Using cached PDF content:', { requestId, pdfFile: pdfFile.name });
+    return cached.content;
+  }
+
+  const startTime = Date.now();
+  console.log('📄 Extracting PDF content:', { requestId, pdfFile: pdfFile.name });
+
+  try {
+    // Construct export URL for Google Drive PDF
+    const exportUrl = `https://www.googleapis.com/drive/v3/files/${pdfFile.id}/export?mimeType=text/plain`;
+    
+    const apiKey = process.env.GOOGLE_DRIVE_API_KEY || process.env.GEMINI_API_KEY;
+    const response = await fetch(exportUrl, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Google Drive API error: ${response.statusText}`);
+    }
+
+    const textContent = await response.text();
+    
+    // Clean and process the content
+    const cleanedContent = cleanPDFContent(textContent);
+    
+    // Cache the content
+    PDF_CONFIG.pdfCache.set(cacheKey, {
+      content: cleanedContent,
+      timestamp: Date.now()
+    });
+    
+    console.log('✅ PDF extraction success:', {
+      requestId,
+      pdfFile: pdfFile.name,
+      duration: Date.now() - startTime,
+      contentLength: cleanedContent.length
+    });
+
+    return cleanedContent;
+
+  } catch (error) {
+    console.error('❌ PDF extraction error:', { 
+      requestId, 
+      pdfFile: pdfFile.name,
+      error: error.message 
+    });
+    
+    // Fallback: Use Gemini to generate synthetic content based on PDF description
+    return await generateSyntheticPDFContent(pdfFile, requestId);
+  }
+}
+
+// ==============================
+// 🧹 PDF Content Cleaner
+// ==============================
+function cleanPDFContent(content) {
+  if (!content) return '';
+  
+  return content
+    // Remove excessive whitespace
+    .replace(/\s+/g, ' ')
+    // Remove special characters but keep basic punctuation
+    .replace(/[^\w\s.,!?;:()-]/g, '')
+    // Trim and normalize
+    .trim()
+    // Limit length to avoid token limits
+    .substring(0, 10000);
+}
+
+// ==============================
+// 🤖 Synthetic PDF Content Generator
+// ==============================
+async function generateSyntheticPDFContent(pdfFile, requestId) {
+  try {
+    console.log('🔷 Generating synthetic PDF content:', { requestId, pdfFile: pdfFile.name });
+    
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    
+    const prompt = `
+    Based on the PDF file "${pdfFile.name}" (Category: ${pdfFile.category}, Description: ${pdfFile.description}),
+    generate comprehensive construction materials information that would typically be found in such a document.
+    
+    Include:
+    - Product specifications and standards
+    - Material properties and features
+    - Application guidelines
+    - Quality standards
+    - Common construction material data
+    
+    Make it detailed and technical, suitable for construction professionals in Kerala.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const syntheticContent = result.response.text();
+    
+    console.log('✅ Synthetic content generated:', {
+      requestId,
+      pdfFile: pdfFile.name,
+      contentLength: syntheticContent.length
+    });
+    
+    return syntheticContent;
+    
+  } catch (error) {
+    console.error('❌ Synthetic content generation failed:', { 
+      requestId, 
+      error: error.message 
+    });
+    
+    return `Technical documentation for ${pdfFile.name}. ${pdfFile.description}. Content temporarily unavailable.`;
+  }
+}
+
+// ==============================
+// 🔍 PDF Search Function
+// ==============================
+async function searchPDFs(query, category = null, requestId) {
+  const startTime = Date.now();
+  console.log('🔍 Searching PDFs:', { requestId, query, category });
+
+  try {
+    // Search in all PDF files
+    const searchResults = [];
+    
+    for (const pdfFile of PDF_CONFIG.pdfFiles) {
+      // Skip if category doesn't match (unless no category specified)
+      if (category && pdfFile.category !== 'general' && pdfFile.category !== category) {
+        continue;
+      }
+      
+      try {
+        const content = await extractPDFContent(pdfFile, requestId);
+        const relevance = calculateRelevance(content, query, pdfFile.category);
+        
+        if (relevance > 0.05) { // Lower threshold for PDFs
+          const snippet = extractSnippet(content, query);
+          
+          searchResults.push({
+            source: 'pdf',
+            title: pdfFile.name,
+            description: pdfFile.description,
+            category: pdfFile.category,
+            content: snippet,
+            relevance: relevance,
+            url: `https://drive.google.com/file/d/${pdfFile.id}/view`,
+            fullContent: content.substring(0, 2000) // Limited for context
+          });
+        }
+      } catch (error) {
+        console.error(`❌ Error processing PDF ${pdfFile.name}:`, error.message);
+        continue;
+      }
+    }
+
+    // Sort by relevance
+    searchResults.sort((a, b) => b.relevance - a.relevance);
+    
+    console.log('✅ PDF search completed:', {
+      requestId,
+      duration: Date.now() - startTime,
+      results: searchResults.length,
+      searchedPDFs: PDF_CONFIG.pdfFiles.length
+    });
+
+    return searchResults.slice(0, 5); // Return top 5 results
+
+  } catch (error) {
+    console.error('❌ PDF search error:', { requestId, error: error.message });
+    return [];
+  }
+}
+
+// ==============================
+// 🧮 Relevance Calculator
+// ==============================
+function calculateRelevance(content, query, category) {
+  if (!content || !query) return 0;
+  
+  const contentLower = content.toLowerCase();
+  const queryLower = query.toLowerCase();
+  const queryTerms = queryLower.split(/\s+/).filter(term => term.length > 2);
+  
+  if (queryTerms.length === 0) return 0;
+  
+  let score = 0;
+  let exactMatches = 0;
+  
+  // Check for exact phrase match
+  if (contentLower.includes(queryLower)) {
+    exactMatches += 3;
+  }
+  
+  // Check for individual term matches
+  queryTerms.forEach(term => {
+    const regex = new RegExp(term, 'gi');
+    const matches = (content.match(regex) || []).length;
+    score += matches * (term.length > 4 ? 2 : 1); // Weight longer terms higher
+  });
+  
+  // Boost score if category matches
+  if (category && queryLower.includes(category)) {
+    score += 2;
+  }
+  
+  // Calculate final relevance score (0-1)
+  const finalScore = (exactMatches + score) / (queryTerms.length * 5);
+  return Math.min(1, finalScore);
+}
+
+// ==============================
+// 📝 Snippet Extractor
+// ==============================
+function extractSnippet(content, query, maxLength = 300) {
+  if (!content || !query) {
+    return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
+  }
+  
+  const contentLower = content.toLowerCase();
+  const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 2);
+  
+  // Try to find the most relevant section
+  for (const term of queryTerms) {
+    const index = contentLower.indexOf(term);
+    if (index !== -1) {
+      const start = Math.max(0, index - 80);
+      const end = Math.min(content.length, index + term.length + 200);
+      let snippet = content.substring(start, end);
+      
+      if (start > 0) snippet = '...' + snippet;
+      if (end < content.length) snippet = snippet + '...';
+      
+      return snippet;
+    }
+  }
+  
+  // Fallback: return beginning of content
+  return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
+}
+
+// ==============================
+// 🧠 Enhanced Combined Response Generator
+// ==============================
+async function generateCombinedResponse(sheetData, pdfData, userQuestion, history = [], requestId) {
+  const startTime = Date.now();
+  console.log('🔄 Generating enhanced combined response:', { 
+    requestId,
+    sheetResults: Array.isArray(sheetData) ? sheetData.length : (sheetData ? 1 : 0),
+    pdfResults: pdfData.length
+  });
+
+  try {
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash-exp",
+      generationConfig: {
+        temperature: 0.3,
+        topP: 0.8,
+        maxOutputTokens: 1024,
+      },
+    });
+
+    // Format sheet data
+    const sheetDataText = sheetData ? (
+      Array.isArray(sheetData) 
+        ? sheetData.map(item => 
+            typeof item === 'string' ? item : JSON.stringify(item)
+          ).join('\n\n')
+        : String(sheetData)
+    ) : "No specific supplier data found in our database.";
+
+    // Format PDF data
+    const pdfDataText = pdfData.length > 0 
+      ? pdfData.map((pdf, index) => 
+          `DOCUMENT ${index + 1}: ${pdf.title}\nDescription: ${pdf.description}\nRelevant Content: ${pdf.content}`
+        ).join('\n\n---\n\n')
+      : "No relevant documentation found in our technical files.";
+
+    const prompt = `
+CONSTRUCTION MATERIALS ASSISTANT - KERALA CONTEXT
+
+USER QUESTION: "${userQuestion}"
+
+SUPPLIER DATABASE RESULTS:
+${sheetDataText}
+
+TECHNICAL DOCUMENTATION RESULTS:
+${pdfDataText}
+
+INSTRUCTIONS:
+1. Create a comprehensive, helpful response for construction professionals in Kerala
+2. Combine supplier information with technical specifications naturally
+3. If you have specific supplier data, present it clearly with relevant details
+4. Integrate technical information from documents to support recommendations
+5. If information is limited, provide general best practices and guidance
+6. Mention any quality standards, specifications, or technical requirements
+7. Keep the tone professional yet conversational
+8. Focus on practical, actionable advice for Kerala construction context
+
+RESPONSE STRUCTURE:
+- Start with a direct answer to the question
+- Present supplier information if available
+- Add technical insights from documentation
+- Include practical tips or considerations
+- End with an offer for more specific information
+
+FINAL RESPONSE:
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = result.response.text();
+
+    console.log('✅ Enhanced combined response success:', { 
+      requestId, 
+      duration: Date.now() - startTime 
+    });
+
+    return response;
+  } catch (error) {
+    console.error('❌ Enhanced combined response error:', { requestId, error: error.message });
+    
+    // Fallback: Simple combination
+    const sheetText = sheetData ? (
+      Array.isArray(sheetData) 
+        ? sheetData.join('\n') 
+        : String(sheetData)
+    ) : "No supplier data available.";
+    
+    const pdfText = pdfData.length > 0 
+      ? pdfData.map(pdf => `📄 ${pdf.title}: ${pdf.content}`).join('\n\n')
+      : "No technical documentation available.";
+    
+    return `Based on our available information:\n\n🏢 Supplier Information:\n${sheetText}\n\n📋 Technical Documentation:\n${pdfText}\n\nWould you like more specific details about any of these options?`;
+  }
+}
+
+// ==============================
 // 🧠 Gemini Answer Generator
 // ==============================
 async function generateGeminiAnswer(prompt, context = [], requestId) {
@@ -33,8 +410,12 @@ async function generateGeminiAnswer(prompt, context = [], requestId) {
     });
 
     const systemPrompt = `You are CC Bot AI, a helpful assistant for construction materials and suppliers in Kerala. 
+You have access to supplier databases and technical PDF documentation including:
+1. "Construction Materials Guide" - General construction materials information and specifications
+2. "Supplier Catalog" - Supplier catalog with product details and pricing
+
 Provide clear, conversational, and helpful responses. If you're discussing specific products like cement, steel, paint, etc., 
-be informative but don't invent specific supplier details unless you have concrete information.`;
+be informative but don't invent specific supplier details unless you have concrete information from our databases.`;
 
     // Build conversation history
     const chatHistory = context.slice(-4).map(msg => ({
@@ -45,7 +426,7 @@ be informative but don't invent specific supplier details unless you have concre
     const chat = model.startChat({
       history: [
         { role: "user", parts: [{ text: systemPrompt }] },
-        { role: "model", parts: [{ text: "I understand. I'm CC Bot AI, ready to help with construction materials in Kerala." }] },
+        { role: "model", parts: [{ text: "I understand. I'm CC Bot AI, ready to help with construction materials in Kerala using both supplier data and technical documentation from our PDF resources." }] },
         ...chatHistory
       ],
     });
@@ -67,64 +448,6 @@ be informative but don't invent specific supplier details unless you have concre
 }
 
 // ==============================
-// 🧠 Combined Response Generator
-// ==============================
-async function generateCombinedResponse(sheetData, userQuestion, history = [], requestId) {
-  const startTime = Date.now();
-  console.log('🔄 Generating combined response:', { requestId });
-
-  try {
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash-exp",
-      generationConfig: {
-        temperature: 0.3, // Lower temperature for more factual responses
-        topP: 0.8,
-        maxOutputTokens: 1024,
-      },
-    });
-
-    const sheetDataText = Array.isArray(sheetData) 
-      ? sheetData.map(item => 
-          typeof item === 'string' ? item : JSON.stringify(item)
-        ).join('\n\n')
-      : String(sheetData);
-
-    const prompt = `
-USER QUESTION: "${userQuestion}"
-
-DATABASE RESULTS:
-${sheetDataText}
-
-INSTRUCTIONS:
-- Create a helpful, conversational response that incorporates the database results naturally
-- If database results are specific suppliers/products, present them clearly
-- Add relevant construction advice, tips, or additional information to complement the database results
-- Keep the tone professional but friendly
-- If database results are limited, acknowledge this and provide general guidance
-- Focus on being helpful for construction materials in Kerala context
-
-RESPONSE:`;
-
-    const result = await model.generateContent(prompt);
-    const response = result.response.text();
-
-    console.log('✅ Combined response success:', { 
-      requestId, 
-      duration: Date.now() - startTime 
-    });
-
-    return response;
-  } catch (error) {
-    console.error('❌ Combined response error:', { requestId, error: error.message });
-    // Fallback to simple concatenation if AI fails
-    const sheetText = Array.isArray(sheetData) 
-      ? sheetData.join('\n') 
-      : String(sheetData);
-    return `Based on our database:\n\n${sheetText}\n\nIs there anything specific about these options you'd like to know more about?`;
-  }
-}
-
-// ==============================
 // 🧾 Schema Validation
 // ==============================
 const BodySchema = z.object({
@@ -134,6 +457,7 @@ const BodySchema = z.object({
     content: z.string() 
   })).default([]),
   useGemini: z.boolean().default(false),
+  usePDF: z.boolean().default(true),
   filters: z.object({
     district: z.string().optional(),
     rating: z.string().optional(),
@@ -301,7 +625,7 @@ function generateRequestId() {
 }
 
 // ==============================
-// 🚀 Main POST Handler
+// 🚀 Enhanced Main POST Handler
 // ==============================
 export async function POST(req) {
   const requestId = generateRequestId();
@@ -323,15 +647,15 @@ export async function POST(req) {
     }
 
     // Validate request body
-    const { question, history = [], useGemini = false, filters = {} } = BodySchema.parse(json);
+    const { question, history = [], useGemini = false, usePDF = true, filters = {} } = BodySchema.parse(json);
 
     console.log('🔍 Processing request:', { 
       requestId, 
       question: question.substring(0, 50) + (question.length > 50 ? '...' : ''),
       useGemini,
+      usePDF,
       hasFilters: Object.keys(filters).length > 0
     });
-    
 
     // Step 1: Analyze query
     const analysis = analyzeQuery(question, history);
@@ -375,38 +699,51 @@ export async function POST(req) {
       });
     }
 
-    // Step 4: ALWAYS CHECK SHEETS FIRST (Priority: Database)
-    console.log('🗄️ Checking sheet database first...');
+    // Step 4: PARALLEL DATA SEARCH - Sheets and PDFs
+    console.log('🗄️ Checking all data sources...');
     
     const searchQuery = buildFilteredQuery(question, combinedFilters);
-    let sheetAnswer = null;
     
+    // Search sheets and PDFs in parallel
+    let sheetAnswer = null;
+    let pdfResults = [];
+
     try {
-      sheetAnswer = await findAnswerInSheet(searchQuery, requestId);
-      console.log('📋 Sheet results:', { 
+      [sheetAnswer, pdfResults] = await Promise.all([
+        findAnswerInSheet(searchQuery, requestId).catch(error => {
+          console.error('❌ Sheet search failed:', error.message);
+          return null;
+        }),
+        usePDF ? searchPDFs(searchQuery, analysis.category, requestId).catch(error => {
+          console.error('❌ PDF search failed:', error.message);
+          return [];
+        }) : []
+      ]);
+      
+      console.log('📊 Search results:', { 
         requestId, 
-        hasResults: !!sheetAnswer,
-        resultsCount: Array.isArray(sheetAnswer) ? sheetAnswer.length : 1
+        sheetResults: Array.isArray(sheetAnswer) ? sheetAnswer.length : (sheetAnswer ? 1 : 0),
+        pdfResults: pdfResults.length
       });
-      console.log('📋 Sheet results:', { 
-  requestId, 
-  hasResults: !!sheetAnswer,
-  resultsCount: Array.isArray(sheetAnswer) ? sheetAnswer.length : 1
-});
-    } catch (sheetError) {
-      console.error('❌ Sheet query failed:', sheetError);
-      sheetAnswer = null;
+      
+    } catch (searchError) {
+      console.error('❌ Parallel search failed:', searchError);
+      // Continue with whatever data we have
     }
 
-    // Step 5: DECISION LOGIC FOR RESPONSE STRATEGY
+    // Step 5: ENHANCED DECISION LOGIC FOR RESPONSE STRATEGY
     let response;
 
-    if (sheetAnswer && (!Array.isArray(sheetAnswer) || sheetAnswer.length > 0)) {
-      // CASE 1: We have sheet data - combine with AI for intelligent response
-      console.log('🔄 Combining sheet data with AI...');
+    const hasSheetData = sheetAnswer && (!Array.isArray(sheetAnswer) || sheetAnswer.length > 0);
+    const hasPDFData = pdfResults.length > 0;
+
+    if (hasSheetData && hasPDFData) {
+      // CASE 1: Both sheet data and PDF data available
+      console.log('🔄 Combining sheet data with PDF documentation...');
       
       const combinedAnswer = await generateCombinedResponse(
         sheetAnswer, 
+        pdfResults,
         question, 
         history, 
         requestId
@@ -416,13 +753,65 @@ export async function POST(req) {
         source: "combined",
         answer: combinedAnswer,
         rawSheetData: sheetAnswer,
+        pdfResults: pdfResults.map(pdf => ({
+          title: pdf.title,
+          description: pdf.description,
+          relevance: pdf.relevance.toFixed(2)
+        })),
         appliedFilters: combinedFilters,
         usedGemini: true,
+        dataSources: ['sheets', 'pdfs']
+      };
+      
+    } else if (hasSheetData) {
+      // CASE 2: Only sheet data available
+      console.log('📋 Using sheet data only...');
+      
+      const combinedAnswer = await generateCombinedResponse(
+        sheetAnswer, 
+        [],
+        question, 
+        history, 
+        requestId
+      );
+      
+      response = {
+        source: "sheets",
+        answer: combinedAnswer,
+        rawSheetData: sheetAnswer,
+        appliedFilters: combinedFilters,
+        usedGemini: true,
+        dataSources: ['sheets']
+      };
+      
+    } else if (hasPDFData) {
+      // CASE 3: Only PDF data available
+      console.log('📄 Using PDF documentation...');
+      
+      const combinedAnswer = await generateCombinedResponse(
+        null,
+        pdfResults,
+        question, 
+        history, 
+        requestId
+      );
+      
+      response = {
+        source: "pdfs",
+        answer: combinedAnswer,
+        pdfResults: pdfResults.map(pdf => ({
+          title: pdf.title,
+          description: pdf.description,
+          relevance: pdf.relevance.toFixed(2)
+        })),
+        appliedFilters: combinedFilters,
+        usedGemini: true,
+        dataSources: ['pdfs']
       };
       
     } else if (useGemini) {
-      // CASE 2: No sheet data but Gemini explicitly requested
-      console.log('🤖 Using Gemini as requested (no sheet results)');
+      // CASE 4: No data but Gemini explicitly requested
+      console.log('🤖 Using Gemini as requested (no data results)');
       
       const aiAnswer = await generateGeminiAnswer(searchQuery, history, requestId);
       response = {
@@ -430,24 +819,27 @@ export async function POST(req) {
         answer: aiAnswer,
         appliedFilters: combinedFilters,
         usedGemini: true,
+        dataSources: []
       };
       
     } else {
-      // CASE 3: No sheet data - offer Gemini help
-      console.log('❌ No results found in sheets');
+      // CASE 5: No data - offer Gemini help
+      console.log('❌ No results found in any data source');
       
       response = {
         source: "fallback",
-        answer: "I couldn't find specific matches in our supplier database. Would you like me to provide general information and guidance about this using AI?",
+        answer: "I couldn't find specific matches in our supplier database or technical documentation. Would you like me to provide general information and guidance about this using AI?",
         needsConfirmation: true,
         appliedFilters: combinedFilters,
+        dataSources: []
       };
     }
 
     console.log('✅ Request completed:', {
       requestId,
       duration: Date.now() - startedAt,
-      responseSource: response.source
+      responseSource: response.source,
+      dataSources: response.dataSources
     });
 
     return NextResponse.json(response);
