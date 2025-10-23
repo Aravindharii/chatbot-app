@@ -1,8 +1,8 @@
-'use server'
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { findAnswerInSheet } from "../../../lib/googleSheets";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+
 
 // ==============================
 // 🔧 Gemini Configuration
@@ -15,11 +15,11 @@ if (!apiKey) {
 
 const genAI = new GoogleGenerativeAI(apiKey);
 
+
 // ==============================
 // 📚 PDF Data Source Configuration
 // ==============================
 const PDF_CONFIG = {
-  // Specific PDF files from Google Drive
   pdfFiles: [
     {
       id: "1NWmzMGDQ_W8nK6-aNdGUnA78yd2iUOwu",
@@ -35,18 +35,15 @@ const PDF_CONFIG = {
     }
   ],
   
-  // Supported PDF types for construction materials
   supportedCategories: [
     'cement', 'steel', 'paint', 'tiles', 'electrical', 'plumbing',
     'hardware', 'tools', 'sanitary', 'construction', 'general', 'suppliers'
   ],
   
-  // Cache for PDF content (in production, use Redis or similar)
   pdfCache: new Map(),
-  
-  // Cache duration (1 hour)
   cacheDuration: 60 * 60 * 1000
 };
+
 
 // ==============================
 // 📄 PDF Content Extractor
@@ -64,7 +61,6 @@ async function extractPDFContent(pdfFile, requestId) {
   console.log('📄 Extracting PDF content:', { requestId, pdfFile: pdfFile.name });
 
   try {
-    // Construct export URL for Google Drive PDF
     const exportUrl = `https://www.googleapis.com/drive/v3/files/${pdfFile.id}/export?mimeType=text/plain`;
     
     const apiKey = process.env.GOOGLE_DRIVE_API_KEY || process.env.GEMINI_API_KEY;
@@ -79,11 +75,8 @@ async function extractPDFContent(pdfFile, requestId) {
     }
 
     const textContent = await response.text();
-    
-    // Clean and process the content
     const cleanedContent = cleanPDFContent(textContent);
     
-    // Cache the content
     PDF_CONFIG.pdfCache.set(cacheKey, {
       content: cleanedContent,
       timestamp: Date.now()
@@ -105,10 +98,10 @@ async function extractPDFContent(pdfFile, requestId) {
       error: error.message 
     });
     
-    // Fallback: Use Gemini to generate synthetic content based on PDF description
     return await generateSyntheticPDFContent(pdfFile, requestId);
   }
 }
+
 
 // ==============================
 // 🧹 PDF Content Cleaner
@@ -117,15 +110,12 @@ function cleanPDFContent(content) {
   if (!content) return '';
   
   return content
-    // Remove excessive whitespace
     .replace(/\s+/g, ' ')
-    // Remove special characters but keep basic punctuation
     .replace(/[^\w\s.,!?;:()-]/g, '')
-    // Trim and normalize
     .trim()
-    // Limit length to avoid token limits
     .substring(0, 10000);
 }
+
 
 // ==============================
 // 🤖 Synthetic PDF Content Generator
@@ -171,6 +161,7 @@ async function generateSyntheticPDFContent(pdfFile, requestId) {
   }
 }
 
+
 // ==============================
 // 🔍 PDF Search Function
 // ==============================
@@ -179,11 +170,9 @@ async function searchPDFs(query, category = null, requestId) {
   console.log('🔍 Searching PDFs:', { requestId, query, category });
 
   try {
-    // Search in all PDF files
     const searchResults = [];
     
     for (const pdfFile of PDF_CONFIG.pdfFiles) {
-      // Skip if category doesn't match (unless no category specified)
       if (category && pdfFile.category !== 'general' && pdfFile.category !== category) {
         continue;
       }
@@ -192,7 +181,7 @@ async function searchPDFs(query, category = null, requestId) {
         const content = await extractPDFContent(pdfFile, requestId);
         const relevance = calculateRelevance(content, query, pdfFile.category);
         
-        if (relevance > 0.05) { // Lower threshold for PDFs
+        if (relevance > 0.05) {
           const snippet = extractSnippet(content, query);
           
           searchResults.push({
@@ -203,7 +192,7 @@ async function searchPDFs(query, category = null, requestId) {
             content: snippet,
             relevance: relevance,
             url: `https://drive.google.com/file/d/${pdfFile.id}/view`,
-            fullContent: content.substring(0, 2000) // Limited for context
+            fullContent: content.substring(0, 2000)
           });
         }
       } catch (error) {
@@ -212,7 +201,6 @@ async function searchPDFs(query, category = null, requestId) {
       }
     }
 
-    // Sort by relevance
     searchResults.sort((a, b) => b.relevance - a.relevance);
     
     console.log('✅ PDF search completed:', {
@@ -222,13 +210,14 @@ async function searchPDFs(query, category = null, requestId) {
       searchedPDFs: PDF_CONFIG.pdfFiles.length
     });
 
-    return searchResults.slice(0, 5); // Return top 5 results
+    return searchResults.slice(0, 5);
 
   } catch (error) {
     console.error('❌ PDF search error:', { requestId, error: error.message });
     return [];
   }
 }
+
 
 // ==============================
 // 🧮 Relevance Calculator
@@ -245,27 +234,24 @@ function calculateRelevance(content, query, category) {
   let score = 0;
   let exactMatches = 0;
   
-  // Check for exact phrase match
   if (contentLower.includes(queryLower)) {
     exactMatches += 3;
   }
   
-  // Check for individual term matches
   queryTerms.forEach(term => {
     const regex = new RegExp(term, 'gi');
     const matches = (content.match(regex) || []).length;
-    score += matches * (term.length > 4 ? 2 : 1); // Weight longer terms higher
+    score += matches * (term.length > 4 ? 2 : 1);
   });
   
-  // Boost score if category matches
   if (category && queryLower.includes(category)) {
     score += 2;
   }
   
-  // Calculate final relevance score (0-1)
   const finalScore = (exactMatches + score) / (queryTerms.length * 5);
   return Math.min(1, finalScore);
 }
+
 
 // ==============================
 // 📝 Snippet Extractor
@@ -278,7 +264,6 @@ function extractSnippet(content, query, maxLength = 300) {
   const contentLower = content.toLowerCase();
   const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 2);
   
-  // Try to find the most relevant section
   for (const term of queryTerms) {
     const index = contentLower.indexOf(term);
     if (index !== -1) {
@@ -293,9 +278,9 @@ function extractSnippet(content, query, maxLength = 300) {
     }
   }
   
-  // Fallback: return beginning of content
   return content.substring(0, maxLength) + (content.length > maxLength ? '...' : '');
 }
+
 
 // ==============================
 // 🧠 Enhanced Combined Response Generator
@@ -318,24 +303,38 @@ async function generateCombinedResponse(sheetData, pdfData, userQuestion, histor
       },
     });
 
-    // Format sheet data
-    const sheetDataText = sheetData ? (
-      Array.isArray(sheetData) 
-        ? sheetData.map(item => 
-            typeof item === 'string' ? item : JSON.stringify(item)
-          ).join('\n\n')
-        : String(sheetData)
-    ) : "No specific supplier data found in our database.";
+    let sheetDataText = "No specific supplier data found in our database.";
+    
+    if (sheetData && Array.isArray(sheetData) && sheetData.length > 0) {
+      sheetDataText = sheetData.map((supplier, index) => {
+        const details = [];
+        
+        if (supplier.Name) details.push(`**Name:** ${supplier.Name}`);
+        if (supplier['Sub Category'] || supplier.Category) details.push(`**Type:** ${supplier['Sub Category'] || supplier.Category}`);
+        if (supplier.District) details.push(`**District:** ${supplier.District}`);
+        if (supplier.Location) details.push(`**Location:** ${supplier.Location}`);
+        if (supplier.Address) details.push(`**Address:** ${supplier.Address}`);
+        if (supplier.phone_number) details.push(`**Phone:** ${supplier.phone_number}`);
+        if (supplier.Website) details.push(`**Website:** ${supplier.Website}`);
+        if (supplier['Email Id']) details.push(`**Email:** ${supplier['Email Id']}`);
+        if (supplier.Review) details.push(`**Rating:** ${supplier.Review} stars`);
+        if (supplier['Rating Count']) details.push(`**Reviews:** ${supplier['Rating Count']}`);
+        if (supplier.PRODUCTS) details.push(`**Products:** ${supplier.PRODUCTS}`);
+        
+        return `\n**SUPPLIER ${index + 1}:**\n${details.join('\n')}`;
+      }).join('\n\n---\n');
+    } else if (sheetData && typeof sheetData === 'string') {
+      sheetDataText = sheetData;
+    }
 
-    // Format PDF data
     const pdfDataText = pdfData.length > 0 
       ? pdfData.map((pdf, index) => 
-          `DOCUMENT ${index + 1}: ${pdf.title}\nDescription: ${pdf.description}\nRelevant Content: ${pdf.content}`
+          `**DOCUMENT ${index + 1}:** ${pdf.title}\n**Description:** ${pdf.description}\n**Relevant Content:** ${pdf.content}`
         ).join('\n\n---\n\n')
       : "No relevant documentation found in our technical files.";
 
     const prompt = `
-CONSTRUCTION MATERIALS ASSISTANT - KERALA CONTEXT
+You are CC Bot AI, a helpful construction materials assistant for Kerala.
 
 USER QUESTION: "${userQuestion}"
 
@@ -346,23 +345,22 @@ TECHNICAL DOCUMENTATION RESULTS:
 ${pdfDataText}
 
 INSTRUCTIONS:
-1. Create a comprehensive, helpful response for construction professionals in Kerala
-2. Combine supplier information with technical specifications naturally
-3. If you have specific supplier data, present it clearly with relevant details
-4. Integrate technical information from documents to support recommendations
-5. If information is limited, provide general best practices and guidance
-6. Mention any quality standards, specifications, or technical requirements
-7. Keep the tone professional yet conversational
-8. Focus on practical, actionable advice for Kerala construction context
+1. Provide a comprehensive, natural response for construction professionals in Kerala
+2. Present supplier information clearly with ALL relevant details (name, location, contact, rating, products)
+3. If multiple suppliers are provided, list ALL of them with their complete details
+4. Integrate technical information from documents naturally
+5. Use a professional yet conversational tone
+6. Focus on practical, actionable advice for Kerala construction context
+7. If limited information, provide general guidance and best practices
 
 RESPONSE STRUCTURE:
 - Start with a direct answer to the question
-- Present supplier information if available
+- Present ALL supplier information with complete details
 - Add technical insights from documentation
 - Include practical tips or considerations
 - End with an offer for more specific information
 
-FINAL RESPONSE:
+Generate a helpful, comprehensive response:
 `;
 
     const result = await model.generateContent(prompt);
@@ -370,27 +368,40 @@ FINAL RESPONSE:
 
     console.log('✅ Enhanced combined response success:', { 
       requestId, 
-      duration: Date.now() - startTime 
+      duration: Date.now() - startTime,
+      responseLength: response.length
     });
 
     return response;
   } catch (error) {
     console.error('❌ Enhanced combined response error:', { requestId, error: error.message });
     
-    // Fallback: Simple combination
-    const sheetText = sheetData ? (
-      Array.isArray(sheetData) 
-        ? sheetData.join('\n') 
-        : String(sheetData)
-    ) : "No supplier data available.";
+    let fallbackText = "Based on our available information:\n\n";
     
-    const pdfText = pdfData.length > 0 
-      ? pdfData.map(pdf => `📄 ${pdf.title}: ${pdf.content}`).join('\n\n')
-      : "No technical documentation available.";
+    if (sheetData && Array.isArray(sheetData) && sheetData.length > 0) {
+      fallbackText += "🏢 **Available Suppliers:**\n\n";
+      sheetData.forEach((supplier, index) => {
+        fallbackText += `**${index + 1}. ${supplier.Name || 'Supplier'}**\n`;
+        if (supplier.Location || supplier.District) fallbackText += `📍 Location: ${supplier.Location || supplier.District}\n`;
+        if (supplier.phone_number) fallbackText += `📞 Phone: ${supplier.phone_number}\n`;
+        if (supplier.Review) fallbackText += `⭐ Rating: ${supplier.Review}\n`;
+        fallbackText += '\n';
+      });
+    }
     
-    return `Based on our available information:\n\n🏢 Supplier Information:\n${sheetText}\n\n📋 Technical Documentation:\n${pdfText}\n\nWould you like more specific details about any of these options?`;
+    if (pdfData.length > 0) {
+      fallbackText += "\n📋 **Technical Documentation:**\n\n";
+      pdfData.forEach(pdf => {
+        fallbackText += `📄 **${pdf.title}:** ${pdf.content}\n\n`;
+      });
+    }
+    
+    fallbackText += "\nWould you like more specific details about any of these options?";
+    
+    return fallbackText;
   }
 }
+
 
 // ==============================
 // 🧠 Gemini Answer Generator
@@ -417,7 +428,6 @@ You have access to supplier databases and technical PDF documentation including:
 Provide clear, conversational, and helpful responses. If you're discussing specific products like cement, steel, paint, etc., 
 be informative but don't invent specific supplier details unless you have concrete information from our databases.`;
 
-    // Build conversation history
     const chatHistory = context.slice(-4).map(msg => ({
       role: msg.role === "assistant" ? "model" : "user",
       parts: [{ text: msg.content }]
@@ -447,6 +457,7 @@ be informative but don't invent specific supplier details unless you have concre
   }
 }
 
+
 // ==============================
 // 🧾 Schema Validation
 // ==============================
@@ -466,13 +477,13 @@ const BodySchema = z.object({
   }).optional().default({}),
 });
 
+
 // ==============================
 // 🧠 Query Analyzer
 // ==============================
 function analyzeQuery(question, history = []) {
   const q = question.toLowerCase().trim();
 
-  // Check if this is a simple greeting or conversational message
   const isConversational = /^(hi|hello|hey|thanks|thank you|ok|yes|no|please|help|good morning|good afternoon|good evening)$/i.test(q);
   
   if (isConversational) {
@@ -503,7 +514,6 @@ function analyzeQuery(question, history = []) {
 
   const missingFilters = [];
   
-  // Only ask for filters if this is a product search (not general question)
   if (detectedCategory && !extractedFilters.district) {
     missingFilters.push("district");
   }
@@ -524,6 +534,7 @@ function analyzeQuery(question, history = []) {
     needsFiltering: missingFilters.length > 0,
   };
 }
+
 
 // ==============================
 // 🧩 Filter Extractors
@@ -563,13 +574,13 @@ function extractPriceRange(text) {
   return null;
 }
 
+
 // ==============================
 // 💬 Single Clarifying Question Generator
 // ==============================
 function generateClarifyingQuestion(missingFilters, category, extractedFilters) {
   const filters = missingFilters.map(f => f.key || f);
   
-  // Prioritize district for location-based queries
   if (filters.includes('district')) {
     return {
       question: `Which district in Kerala would you prefer for ${category} suppliers?`,
@@ -578,7 +589,6 @@ function generateClarifyingQuestion(missingFilters, category, extractedFilters) 
     };
   }
   
-  // Then rating preference
   if (filters.includes('rating')) {
     return {
       question: `What's your preferred minimum rating for ${category} suppliers?`,
@@ -587,7 +597,6 @@ function generateClarifyingQuestion(missingFilters, category, extractedFilters) 
     };
   }
   
-  // Finally budget
   if (filters.includes('priceRange')) {
     return {
       question: `What's your budget range for ${category}?`,
@@ -596,13 +605,13 @@ function generateClarifyingQuestion(missingFilters, category, extractedFilters) 
     };
   }
   
-  // Generic fallback
   return {
     question: `Could you tell me more specifically what you're looking for in ${category}?`,
     type: 'general',
     options: []
   };
 }
+
 
 // ==============================
 // 🧮 Filtered Query Builder
@@ -617,12 +626,14 @@ function buildFilteredQuery(question, filters) {
   return query;
 }
 
+
 // ==============================
 // 🆔 Request ID Generator
 // ==============================
 function generateRequestId() {
   return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
+
 
 // ==============================
 // 🚀 Enhanced Main POST Handler
@@ -634,7 +645,6 @@ export async function POST(req) {
   console.log('📥 Request received:', { requestId });
 
   try {
-    // Parse request body
     let json;
     try {
       json = await req.json();
@@ -646,7 +656,6 @@ export async function POST(req) {
       );
     }
 
-    // Validate request body
     const { question, history = [], useGemini = false, usePDF = true, filters = {} } = BodySchema.parse(json);
 
     console.log('🔍 Processing request:', { 
@@ -657,7 +666,6 @@ export async function POST(req) {
       hasFilters: Object.keys(filters).length > 0
     });
 
-    // Step 1: Analyze query
     const analysis = analyzeQuery(question, history);
     const combinedFilters = { ...analysis.extractedFilters, ...filters };
 
@@ -669,7 +677,6 @@ export async function POST(req) {
       missingFilters: analysis.missingFilters
     });
 
-    // Step 2: Handle conversational messages - Use Gemini for these
     if (analysis.isConversational) {
       console.log('💬 Conversational query - using Gemini');
       const aiAnswer = await generateGeminiAnswer(question, history, requestId);
@@ -680,7 +687,6 @@ export async function POST(req) {
       });
     }
 
-    // Step 3: Ask SINGLE clarifying question if needed (before checking sheets)
     if (analysis.needsFiltering && Object.keys(filters).length === 0) {
       console.log('🎯 Query needs clarification');
       const clarifyingQuestion = generateClarifyingQuestion(
@@ -699,18 +705,16 @@ export async function POST(req) {
       });
     }
 
-    // Step 4: PARALLEL DATA SEARCH - Sheets and PDFs
     console.log('🗄️ Checking all data sources...');
-    
+
     const searchQuery = buildFilteredQuery(question, combinedFilters);
-    
-    // Search sheets and PDFs in parallel
+
     let sheetAnswer = null;
     let pdfResults = [];
 
     try {
       [sheetAnswer, pdfResults] = await Promise.all([
-        findAnswerInSheet(searchQuery, requestId).catch(error => {
+        findAnswerInSheet(searchQuery, requestId, combinedFilters).catch(error => {
           console.error('❌ Sheet search failed:', error.message);
           return null;
         }),
@@ -728,17 +732,14 @@ export async function POST(req) {
       
     } catch (searchError) {
       console.error('❌ Parallel search failed:', searchError);
-      // Continue with whatever data we have
     }
 
-    // Step 5: ENHANCED DECISION LOGIC FOR RESPONSE STRATEGY
     let response;
 
     const hasSheetData = sheetAnswer && (!Array.isArray(sheetAnswer) || sheetAnswer.length > 0);
     const hasPDFData = pdfResults.length > 0;
 
     if (hasSheetData && hasPDFData) {
-      // CASE 1: Both sheet data and PDF data available
       console.log('🔄 Combining sheet data with PDF documentation...');
       
       const combinedAnswer = await generateCombinedResponse(
@@ -764,7 +765,6 @@ export async function POST(req) {
       };
       
     } else if (hasSheetData) {
-      // CASE 2: Only sheet data available
       console.log('📋 Using sheet data only...');
       
       const combinedAnswer = await generateCombinedResponse(
@@ -785,7 +785,6 @@ export async function POST(req) {
       };
       
     } else if (hasPDFData) {
-      // CASE 3: Only PDF data available
       console.log('📄 Using PDF documentation...');
       
       const combinedAnswer = await generateCombinedResponse(
@@ -810,7 +809,6 @@ export async function POST(req) {
       };
       
     } else if (useGemini) {
-      // CASE 4: No data but Gemini explicitly requested
       console.log('🤖 Using Gemini as requested (no data results)');
       
       const aiAnswer = await generateGeminiAnswer(searchQuery, history, requestId);
@@ -823,7 +821,6 @@ export async function POST(req) {
       };
       
     } else {
-      // CASE 5: No data - offer Gemini help
       console.log('❌ No results found in any data source');
       
       response = {
@@ -851,7 +848,6 @@ export async function POST(req) {
       stack: err.stack
     });
     
-    // Handle specific error types
     if (err instanceof z.ZodError) {
       return NextResponse.json(
         { error: "Invalid request data: " + err.errors.map(e => e.message).join(", ") },
@@ -865,6 +861,7 @@ export async function POST(req) {
     );
   }
 }
+
 
 // ==============================
 // 🛡️ OPTIONS Handler for CORS
@@ -880,30 +877,11 @@ export async function OPTIONS() {
   });
 }
 
+
 // ==============================
 // ❌ GET Handler - Method Not Allowed
 // ==============================
 export async function GET() {
-  return NextResponse.json(
-    { error: "Method not allowed. Use POST requests." },
-    { status: 405 }
-  );
-}
-
-// ==============================
-// ❌ PUT Handler - Method Not Allowed
-// ==============================
-export async function PUT() {
-  return NextResponse.json(
-    { error: "Method not allowed. Use POST requests." },
-    { status: 405 }
-  );
-}
-
-// ==============================
-// ❌ DELETE Handler - Method Not Allowed
-// ==============================
-export async function DELETE() {
   return NextResponse.json(
     { error: "Method not allowed. Use POST requests." },
     { status: 405 }
