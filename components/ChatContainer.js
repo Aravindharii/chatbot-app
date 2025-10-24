@@ -179,85 +179,103 @@ export default function Chat() {
     [messages]
   );
 
- async function sendMessage(messageText = null) {
-  const text = messageText || input.trim();
-  if (!text || isTyping) return;
+  async function sendMessage(messageText = null) {
+    const text = messageText || input.trim();
+    if (!text || isTyping) return;
 
-  if (!messageText) setInput("");
-  setError(null);
-  const timestamp = new Date().toISOString();
+    if (!messageText) setInput("");
+    setError(null);
+    const timestamp = new Date().toISOString();
 
-  const userMsg = {
-    id: crypto.randomUUID(),
-    role: "user",
-    content: text,
-    timestamp,
-  };
-  setMessages((prev) => [...prev, userMsg]);
-  setIsTyping(true);
+    const userMsg = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text,
+      timestamp,
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setIsTyping(true);
 
-  try {
-    const res = await fetch("/api/query", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: text,
-        history,
-        useGemini: true,
-        usePDF: true,
-      }),
-    });
+    try {
+      const res = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: text,
+          history,
+          useGemini: true,
+          usePDF: true,
+        }),
+      });
 
-    if (!res.ok) {
-      throw new Error(`HTTP error! status: ${res.status}`);
-    }
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
 
-    const data = await res.json();
+      const data = await res.json();
 
-    if (data.needsClarification) {
+      if (data.needsClarification) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            type: "clarification",
+            content: data.answer,
+            options: data.options,
+            questionType: data.questionType,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      } else if (
+        data.rawSheetData &&
+        Array.isArray(data.rawSheetData) &&
+        data.rawSheetData.length > 0
+      ) {
+        // Parse suppliers from rawSheetData
+        const suppliers = parseSuppliers(data.rawSheetData);
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            type: "suppliers",
+            suppliers: suppliers,
+            aiInsight: data.answer,
+            content: data.answer,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            type: "text",
+            content: data.answer || "Sorry, I couldn't generate a response.",
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error("Chat error:", error);
+      setError(error.message);
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          type: "clarification",
-          content: data.answer,
-          options: data.options,
-          questionType: data.questionType,
+          type: "error",
+          content: "⚠️ Sorry, I encountered an error. Please try again.",
           timestamp: new Date().toISOString(),
         },
       ]);
-    } else {
-      // ONLY add ONE message with the AI response
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          type: "text",
-          content: data.answer || "Sorry, I couldn't generate a response.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+    } finally {
+      setIsTyping(false);
     }
-  } catch (error) {
-    console.error("Chat error:", error);
-    setError(error.message);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        type: "error",
-        content: "⚠️ Sorry, I encountered an error. Please try again.",
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-  } finally {
-    setIsTyping(false);
   }
-}
-
 
   // AUTO-SUBMIT when option is clicked
   function handleOptionClick(option) {
